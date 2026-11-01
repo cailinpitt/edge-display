@@ -19,7 +19,7 @@ Edit `config.json` on the server. It's re-read on change, so no restart is neede
 
 ```
 npm run dev      # http://localhost:8788, live data tunneled from the server
-npm run deploy   # rsync to the server and restart the services
+npm run deploy   # push, git pull on the server, restart the services
 ```
 
 ## Install (once, on the server)
