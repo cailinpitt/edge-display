@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>html, body { margin: 0; background: #04070b; overflow: hidden; }</style>
+</head>
+<body>
+<canvas id="c" width="1840" height="720"></canvas>
+<script>
+/*DATA*/
+// Oblique "2.5D": roofs are lifted straight up the screen by height, so
+// buildings further south are drawn last and overlap the ones behind them.
+const EXAGGERATION = 2.4;
+const ROAD_WIDTH = { motorway: 2.4, trunk: 2, primary: 1.5, secondary: 1.1, tertiary: 0.7 };
+
+const c = document.getElementById('c').getContext('2d');
+c.fillStyle = '#04070b';
+c.fillRect(0, 0, 1840, 720);
+
+const glow = c.createRadialGradient(830, 400, 0, 830, 400, 700);
+glow.addColorStop(0, 'rgba(30, 80, 140, 0.16)');
+glow.addColorStop(1, 'rgba(30, 80, 140, 0)');
+c.fillStyle = glow;
+c.fillRect(0, 0, 1840, 720);
+
+c.lineCap = 'round';
+c.lineJoin = 'round';
+for (const r of DATA.roads) {
+  c.strokeStyle = r.cls === 'motorway' || r.cls === 'trunk' ? 'rgba(110,160,210,0.16)' : 'rgba(110,160,210,0.09)';
+  c.lineWidth = ROAD_WIDTH[r.cls] || 0.7;
+  c.beginPath();
+  r.pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
+  c.stroke();
+}
+
+const items = DATA.buildings
+  .map((b) => ({ ...b, lift: b.ft * DATA.pxPerFt * EXAGGERATION, maxY: Math.max(...b.pts.map((p) => p[1])) }))
+  .sort((a, b) => a.maxY - b.maxY);
+
+for (const b of items) {
+  const tall = Math.min(1, b.ft / 500);
+  const lift = b.lift;
+  const pts = b.pts;
+
+  if (lift > 1.5) {
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [x1, y1] = pts[i];
+      const [x2, y2] = pts[i + 1];
+      const facing = (x2 - x1) / (Math.hypot(x2 - x1, y2 - y1) || 1);
+      c.fillStyle = `rgba(${20 + 30 * Math.abs(facing)}, ${50 + 50 * Math.abs(facing)}, ${85 + 60 * Math.abs(facing)}, ${0.35 + 0.45 * tall})`;
+      c.beginPath();
+      c.moveTo(x1, y1);
+      c.lineTo(x2, y2);
+      c.lineTo(x2, y2 - lift);
+      c.lineTo(x1, y1 - lift);
+      c.closePath();
+      c.fill();
+    }
+  }
+
+  c.beginPath();
+  pts.forEach(([x, y], i) => (i ? c.lineTo(x, y - lift) : c.moveTo(x, y - lift)));
+  c.closePath();
+  c.fillStyle = `rgba(${40 + 50 * tall}, ${90 + 70 * tall}, ${140 + 90 * tall}, ${0.18 + 0.5 * tall})`;
+  c.fill();
+  c.strokeStyle = `rgba(110, 190, 255, ${0.12 + 0.6 * tall})`;
+  c.lineWidth = tall > 0.3 ? 0.9 : 0.5;
+  if (tall > 0.3) {
+    c.shadowColor = 'rgba(90, 180, 255, 0.8)';
+    c.shadowBlur = 6;
+  }
+  c.stroke();
+  c.shadowBlur = 0;
+}
+</script>
+</body>
+</html>

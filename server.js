@@ -6,7 +6,6 @@ const { readConfig, isAsleep } = require('./lib/config');
 
 const PUBLIC_DIR = Path.join(__dirname, 'public');
 const RAIL_WINDOW_MS = 4 * 60 * 1000;
-const HISTORY_WINDOW_MS = 42 * 60 * 1000;
 const BUS_POLL_MS = 30 * 1000;
 const MAX_BUS_ARRIVALS = 4;
 const FT_PER_MI = 5280;
@@ -37,10 +36,12 @@ function buildRailMeta(lines) {
       })
       .filter(Boolean)
       .sort((a, b) => a.distFt - b.distFt);
-    return { line, lengthFt: Math.round(geom.lengthFt), stations };
+    const points = geom.points.map((p) => [round5(p.lat), round5(p.lon), Math.round(p.distFt)]);
+    return { line, lengthFt: Math.round(geom.lengthFt), stations, points };
   });
 }
 
+const round5 = (v) => Math.round(v * 1e5) / 1e5;
 const railMeta = buildRailMeta(boot.rail.lines);
 
 function railTrains(cfg, sinceMs) {
@@ -169,6 +170,8 @@ const MIME = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.woff2': 'font/woff2',
+  '.png': 'image/png',
+  '.json': 'application/json',
 };
 
 function sendJson(res, body) {
@@ -192,9 +195,6 @@ const server = Http.createServer((req, res) => {
     const cfg = readConfig();
     if (req.url === '/api/meta') {
       return sendJson(res, { rail: railMeta, home: cfg.rail.home, bus: { route: cfg.bus.route, title: cfg.bus.title, color: busRoute?.route_color } });
-    }
-    if (req.url === '/api/history') {
-      return sendJson(res, { trains: railTrains(cfg, Date.now() - HISTORY_WINDOW_MS) });
     }
     if (req.url === '/api/state') {
       return sendJson(res, {

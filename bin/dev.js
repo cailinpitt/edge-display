@@ -8,9 +8,9 @@ const Path = require('node:path');
 const HOST = process.env.EDGE_HOST || 'cailin-server';
 const PORT = Number(process.env.PORT || 8788);
 const TUNNEL_PORT = 8789;
-const REMOTE_PORT = require('../config.json').port;
+const REMOTE_PORT = Number(process.env.EDGE_REMOTE_PORT || require('../config.json').port);
 const PUBLIC_DIR = Path.join(__dirname, '..', 'public');
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2' };
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.woff2': 'font/woff2', '.png': 'image/png', '.json': 'application/json' };
 
 const tunnel = spawn('ssh', ['-N', '-L', `${TUNNEL_PORT}:127.0.0.1:${REMOTE_PORT}`, HOST], { stdio: 'inherit' });
 process.on('exit', () => tunnel.kill());

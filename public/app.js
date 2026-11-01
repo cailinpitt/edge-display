@@ -4,27 +4,38 @@ const COLORS = { BLUE: '#2b9bff', GREEN: '#1fd17a' };
 
 // Trains are drawn this far in the past so there is always a sample on both sides to interpolate between.
 const LAG_MS = 40 * 1000;
-const HISTORY_MS = 40 * 60 * 1000;
+const KEEP_MS = 5 * 60 * 1000;
 const FADE_AFTER_MS = 60 * 1000;
 const FADE_MS = 60 * 1000;
 const MAX_STEP_FT = 5000;
 const STALE_MS = 3 * 60 * 1000;
 
-const X0 = 120;
-const X1 = 1650;
-const MAREY_TOP = 112;
-const MAREY_BOTTOM = 424;
-const GREEN_Y = 474;
-const BLUE_Y = 506;
-const JOG_Y = 446;
-const TRAIN_OFFSET = 7;
+// Green shares Blue's track downtown; draw it just north so both stay visible.
+const LINE_SHIFT = { BLUE: 0, GREEN: -13 };
+const LABEL_FONT = '600 24px Inter';
+const LABEL_PRIORITY = [
+  'HAMILTON E HOLMES',
+  'INDIAN CREEK',
+  'BANKHEAD',
+  'FIVE POINTS',
+  'EDGEWOOD-CANDLER PARK',
+  'DECATUR',
+  'ASHBY',
+  'WEST LAKE',
+  'EAST LAKE',
+  'KENSINGTON',
+  'AVONDALE',
+  'KING MEMORIAL',
+];
+const HEADER_BOX = { x: 0, y: 0, w: 760, h: 100 };
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 const staticLayer = document.createElement('canvas');
 
 let meta = null;
-let layout = null;
+let proj = null;
+let lines = {};
 let homeArrivals = [];
 let busState = null;
 let railUpdatedAt = 0;
@@ -35,115 +46,77 @@ function fitStage() {
   document.getElementById('stage').style.transform = `scale(${scale})`;
 }
 
+const baseName = (name) => name.replace(/ Station$/i, '');
+
 function prettyStation(name) {
-  return name
-    .replace(/ Station$/i, '')
+  const short = baseName(name)
     .replace('HAMILTON E HOLMES', 'H.E. HOLMES')
-    .replace('INMAN PARK-REYNOLDSTOWN', 'INMAN PARK');
+    .replace('INMAN PARK-REYNOLDSTOWN', 'INMAN PARK')
+    .replace('EDGEWOOD-CANDLER PARK', 'EDGEWOOD');
+  return short.toLowerCase().replace(/(^|[\s.-])\w/g, (m) => m.toUpperCase());
 }
 
 function prettyDest(dest) {
   return dest.replace('Hamilton E. Holmes', 'H.E. Holmes');
 }
 
-// Schematic: Blue runs straight across; Green rides alongside it and jogs up to Bankhead.
-function buildLayout() {
-  const blue = meta.rail.find((l) => l.line === 'BLUE');
-  const green = meta.rail.find((l) => l.line === 'GREEN');
-  const xByName = new Map();
-  const lines = {};
+function project(lat, lon) {
+  return [(lon - proj.lon0) * proj.pxPerDegLon, (proj.lat0 - lat) * proj.pxPerDegLat];
+}
 
-  if (blue) {
-    const st = [...blue.stations].sort((a, b) => a.lon - b.lon);
-    const lonMin = st[0].lon;
-    const lonMax = st[st.length - 1].lon;
-    st.forEach((s, i) => {
-      const even = i / (st.length - 1);
-      const geo = (s.lon - lonMin) / (lonMax - lonMin);
-      xByName.set(s.name, X0 + (X1 - X0) * (0.6 * even + 0.4 * geo));
+function buildLines() {
+  const out = {};
+  for (const l of meta.rail) {
+    const shift = LINE_SHIFT[l.line] || 0;
+    const pts = l.points.map(([lat, lon, d]) => {
+      const [x, y] = project(lat, lon);
+      return { x, y: y + shift, d };
     });
-    lines.BLUE = { nodes: st.map((s) => ({ x: xByName.get(s.name), y: BLUE_Y, station: s })) };
+    out[l.line] = {
+      pts,
+      stations: l.stations,
+      eastIsIncreasing: pts[pts.length - 1].x > pts[0].x,
+    };
   }
-
-  if (green) {
-    const st = [...green.stations].sort((a, b) => a.lon - b.lon);
-    const nodes = [];
-    for (const s of st) {
-      if (xByName.has(s.name)) {
-        nodes.push({ x: xByName.get(s.name), y: GREEN_Y, station: s });
-      } else {
-        nodes.push({ x: null, y: JOG_Y, station: s, branch: true });
-      }
-    }
-    const firstShared = nodes.findIndex((n) => !n.branch);
-    const ashby = nodes[firstShared];
-    const westLake = [...xByName.entries()].find(([n]) => n.startsWith('WEST LAKE'));
-    const branchX = westLake ? ashby.x - 0.5 * (ashby.x - westLake[1]) : ashby.x - 70;
-    for (let i = 0; i < firstShared; i++) nodes[i].x = branchX - (firstShared - 1 - i) * 60;
-    nodes.splice(firstShared, 0, { x: ashby.x - (GREEN_Y - JOG_Y), y: JOG_Y });
-    lines.GREEN = { nodes };
-  }
-
-  for (const l of Object.values(lines)) {
-    l.anchors = l.nodes.map((n, i) => (n.station ? i : -1)).filter((i) => i >= 0);
-  }
-  return { lines, xByName };
+  return out;
 }
 
-function pointAlong(nodes, from, to, f) {
-  const segs = [];
-  let total = 0;
-  for (let i = from; i < to; i++) {
-    const len = Math.hypot(nodes[i + 1].x - nodes[i].x, nodes[i + 1].y - nodes[i].y);
-    segs.push(len);
-    total += len;
-  }
-  let target = f * total;
-  for (let i = from; i < to; i++) {
-    const len = segs[i - from];
-    if (target <= len || i === to - 1) {
-      const t = len ? Math.min(1, target / len) : 0;
-      const a = nodes[i];
-      const b = nodes[i + 1];
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, tx: (b.x - a.x) / len, ty: (b.y - a.y) / len };
-    }
-    target -= len;
-  }
-  return { x: nodes[from].x, y: nodes[from].y, tx: 1, ty: 0 };
-}
-
-// Map along-track feet onto the schematic, piecewise between station anchors.
 function posFor(line, d) {
-  const l = layout.lines[line];
-  if (!l) return null;
-  const { nodes, anchors } = l;
-  for (let k = 0; k < anchors.length - 1; k++) {
-    const a = nodes[anchors[k]].station.distFt;
-    const b = nodes[anchors[k + 1]].station.distFt;
-    if ((d - a) * (d - b) <= 0) {
-      return pointAlong(nodes, anchors[k], anchors[k + 1], a === b ? 0 : (d - a) / (b - a));
-    }
+  const { pts } = lines[line];
+  if (d <= pts[0].d) return withTangent(pts, 0, 0);
+  if (d >= pts[pts.length - 1].d) return withTangent(pts, pts.length - 2, 1);
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].d <= d) lo = mid;
+    else hi = mid;
   }
-  const first = nodes[anchors[0]].station.distFt;
-  const last = nodes[anchors[anchors.length - 1]].station.distFt;
-  const atStart = Math.abs(d - first) < Math.abs(d - last);
-  return atStart ? pointAlong(nodes, anchors[0], anchors[1], 0) : pointAlong(nodes, anchors[anchors.length - 2], anchors[anchors.length - 1], 1);
+  const span = pts[hi].d - pts[lo].d;
+  return withTangent(pts, lo, span ? (d - pts[lo].d) / span : 0);
+}
+
+function withTangent(pts, i, t) {
+  const a = pts[i];
+  const b = pts[i + 1];
+  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, tx: (b.x - a.x) / len, ty: (b.y - a.y) / len };
 }
 
 function ingest(rows) {
   for (const r of rows) {
+    if (!lines[r.line]) continue;
     const key = `${r.line}:${r.id}`;
     let t = trains.get(key);
     if (!t) {
       t = { line: r.line, id: r.id, pts: [] };
       trains.set(key, t);
     }
-    t.dest = r.dest;
     if (t.pts.some((p) => p.ts === r.ts)) continue;
     t.pts.push({ ts: r.ts, d: r.d, dir: r.dir });
     t.pts.sort((a, b) => a.ts - b.ts);
   }
-  const cutoff = Date.now() - HISTORY_MS - LAG_MS - 60 * 1000;
+  const cutoff = Date.now() - KEEP_MS;
   for (const [key, t] of trains) {
     t.pts = t.pts.filter((p) => p.ts > cutoff);
     if (!t.pts.length) trains.delete(key);
@@ -178,11 +151,12 @@ function sampleAt(pts, T) {
   return { d, dir: p1.dir, held: 0 };
 }
 
-function maryY(T, ts) {
-  return MAREY_BOTTOM - ((T - ts) / HISTORY_MS) * (MAREY_BOTTOM - MAREY_TOP);
+function hexA(hex, a) {
+  const n = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
-function strokeTrack(c, nodes, width, color, blur) {
+function stroke(c, pts, width, color, blur) {
   c.save();
   c.lineWidth = width;
   c.strokeStyle = color;
@@ -191,126 +165,117 @@ function strokeTrack(c, nodes, width, color, blur) {
   c.shadowColor = color;
   c.shadowBlur = blur;
   c.beginPath();
-  nodes.forEach((n, i) => (i ? c.lineTo(n.x, n.y) : c.moveTo(n.x, n.y)));
+  pts.forEach((p, i) => (i ? c.lineTo(p.x, p.y) : c.moveTo(p.x, p.y)));
   c.stroke();
   c.restore();
+}
+
+// One marker per station; where Blue and Green both stop, a pill spans the two tracks.
+function stationMarkers() {
+  const byName = new Map();
+  for (const [line, l] of Object.entries(lines)) {
+    for (const s of l.stations) {
+      const p = posFor(line, s.distFt);
+      if (!byName.has(s.name)) byName.set(s.name, { name: s.name, pts: [] });
+      byName.get(s.name).pts.push({ line, x: p.x, y: p.y });
+    }
+  }
+  return [...byName.values()].map((m) => {
+    const xs = m.pts.map((p) => p.x);
+    const ys = m.pts.map((p) => p.y);
+    return {
+      name: m.name,
+      x: xs.reduce((a, b) => a + b) / xs.length,
+      top: Math.min(...ys),
+      bottom: Math.max(...ys),
+      line: m.pts.length === 1 ? m.pts[0].line : null,
+    };
+  });
+}
+
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+// Greedy: most important stations first, each tries below / above / beside its marker and is skipped if nothing fits.
+function placeLabels(c, markers) {
+  const home = baseName(meta.home.mapName);
+  const rank = (m) => {
+    const n = baseName(m.name);
+    if (n === home) return -1;
+    return LABEL_PRIORITY.indexOf(n);
+  };
+  const track = Object.values(lines).flatMap((l) =>
+    l.pts.filter((_, i) => i % 3 === 0).map((p) => ({ x: p.x - 5, y: p.y - 5, w: 10, h: 10 })),
+  );
+  const placed = [HEADER_BOX, ...track, ...markers.map((m) => ({ x: m.x - 12, y: m.top - 12, w: 24, h: m.bottom - m.top + 24 }))];
+  const out = [];
+  c.font = LABEL_FONT;
+  const labelled = markers.filter((m) => baseName(m.name) === home || rank(m) >= 0);
+  for (const m of labelled.sort((a, b) => rank(a) - rank(b))) {
+    const text = prettyStation(m.name);
+    const w = c.measureText(text).width;
+    const h = 26;
+    const options = [
+      { x: m.x - w / 2, y: m.bottom + 20 },
+      { x: m.x - w / 2, y: m.top - 20 - h },
+      { x: m.x + 20, y: (m.top + m.bottom) / 2 - h / 2 },
+      { x: m.x - 20 - w, y: (m.top + m.bottom) / 2 - h / 2 },
+      { x: m.x - w / 2, y: m.bottom + 52 },
+      { x: m.x - w / 2, y: m.top - 52 - h },
+    ];
+    for (const o of options) {
+      o.x = Math.min(Math.max(o.x, 14), MAP_W - 14 - w);
+      const box = { x: o.x - 4, y: o.y - 2, w: w + 8, h: h + 4 };
+      if (box.y < 10 || box.y + box.h > H - 10) continue;
+      if (placed.some((p) => overlaps(box, p))) continue;
+      placed.push(box);
+      out.push({ text, x: o.x, y: o.y, isHome: baseName(m.name) === home, anchor: m, w, h });
+      break;
+    }
+  }
+  return out;
 }
 
 function drawStatic() {
   staticLayer.width = MAP_W;
   staticLayer.height = H;
   const c = staticLayer.getContext('2d');
+
+  for (const [line, l] of Object.entries(lines)) {
+    stroke(c, l.pts, 16, hexA(COLORS[line], 0.12), 30);
+    stroke(c, l.pts, 9, 'rgba(4,7,11,0.85)', 0);
+    stroke(c, l.pts, 5, hexA(COLORS[line], 0.95), 14);
+  }
+
+  const markers = stationMarkers();
   const homeName = meta.home.mapName;
-
-  c.strokeStyle = 'rgba(255,255,255,0.035)';
-  c.lineWidth = 1;
-  for (const x of layout.xByName.values()) {
-    c.beginPath();
-    c.moveTo(Math.round(x) + 0.5, MAREY_TOP);
-    c.lineTo(Math.round(x) + 0.5, MAREY_BOTTOM);
-    c.stroke();
-  }
-
-  c.font = '500 12px Inter';
-  c.textAlign = 'right';
-  c.fillStyle = '#34404d';
-  for (let m = 10; m <= 40; m += 10) {
-    const y = Math.round(MAREY_BOTTOM - (m / 40) * (MAREY_BOTTOM - MAREY_TOP)) + 0.5;
-    c.strokeStyle = 'rgba(255,255,255,0.04)';
-    c.setLineDash([2, 6]);
-    c.beginPath();
-    c.moveTo(X0 - 20, y);
-    c.lineTo(X1 + 20, y);
-    c.stroke();
-    c.setLineDash([]);
-    c.fillText(`${m} MIN AGO`, MAP_W - 64, y + 4);
-  }
-
-  for (const [line, l] of Object.entries(layout.lines)) {
-    strokeTrack(c, l.nodes, 12, hexA(COLORS[line], 0.1), 24);
-    strokeTrack(c, l.nodes, 3, hexA(COLORS[line], 0.9), 10);
-  }
-
-  const shared = new Set();
-  if (layout.lines.GREEN) for (const n of layout.lines.GREEN.nodes) if (n.station && !n.branch) shared.add(n.station.name);
-
-  const marker = (x, y1, y2, color, isHome) => {
+  for (const m of markers) {
+    const isHome = m.name === homeName;
     c.save();
     c.beginPath();
-    c.roundRect(x - 7, y1 - 7, 14, y2 - y1 + 14, 7);
-    c.fillStyle = isHome ? '#e9eef4' : '#05080b';
-    c.shadowColor = isHome ? 'rgba(233,238,244,0.8)' : 'transparent';
-    c.shadowBlur = isHome ? 18 : 0;
+    c.roundRect(m.x - 9, m.top - 9, 18, m.bottom - m.top + 18, 9);
+    c.fillStyle = isHome ? '#ffffff' : '#04070b';
+    c.shadowColor = isHome ? 'rgba(255,255,255,0.9)' : 'transparent';
+    c.shadowBlur = isHome ? 22 : 0;
     c.fill();
     c.shadowBlur = 0;
-    c.lineWidth = 2;
-    c.strokeStyle = color;
+    c.lineWidth = 3;
+    c.strokeStyle = isHome ? '#ffffff' : m.line ? COLORS[m.line] : '#dfe7ef';
     c.stroke();
     c.restore();
-  };
+  }
 
-  const label = (text, x, y, isHome) => {
+  for (const l of placeLabels(c, markers)) {
     c.save();
-    c.translate(x, y);
-    c.rotate(Math.PI / 5.6);
-    c.textAlign = 'left';
-    c.font = isHome ? '700 15px Inter' : '500 14px Inter';
-    c.letterSpacing = '2px';
-    c.fillStyle = isHome ? '#ffffff' : '#7d8b9c';
-    c.fillText(text, 0, 0);
+    c.font = l.isHome ? '750 26px Inter' : LABEL_FONT;
+    c.textBaseline = 'top';
+    c.lineJoin = 'round';
+    c.lineWidth = 7;
+    c.strokeStyle = 'rgba(4,7,11,0.92)';
+    c.strokeText(l.text, l.x, l.y);
+    c.fillStyle = l.isHome ? '#ffffff' : '#c3cfdb';
+    c.fillText(l.text, l.x, l.y);
     c.restore();
-  };
-
-  if (layout.lines.BLUE) {
-    for (const n of layout.lines.BLUE.nodes) {
-      const isHome = n.station.name === homeName;
-      const both = shared.has(n.station.name);
-      marker(n.x, both ? GREEN_Y : BLUE_Y, BLUE_Y, isHome ? '#ffffff' : both ? '#cfd8e3' : COLORS.BLUE, isHome);
-      label(prettyStation(n.station.name), n.x + 4, BLUE_Y + 30, isHome);
-    }
   }
-  if (layout.lines.GREEN) {
-    for (const n of layout.lines.GREEN.nodes) {
-      if (!n.branch) continue;
-      marker(n.x, JOG_Y, JOG_Y, COLORS.GREEN, n.station.name === homeName);
-      c.save();
-      c.font = '500 14px Inter';
-      c.letterSpacing = '2px';
-      c.fillStyle = '#7d8b9c';
-      c.textAlign = 'right';
-      c.fillText(prettyStation(n.station.name), n.x - 18, JOG_Y + 5);
-      c.restore();
-    }
-  }
-}
-
-function hexA(hex, a) {
-  const n = Number.parseInt(hex.slice(1), 16);
-  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
-}
-
-function drawMarey(T) {
-  ctx.save();
-  ctx.lineWidth = 1.6;
-  ctx.lineCap = 'round';
-  for (const t of trains.values()) {
-    const color = COLORS[t.line];
-    const pts = t.pts.filter((p) => p.ts <= T && p.ts >= T - HISTORY_MS);
-    const now = sampleAt(t.pts, T);
-    if (now && !now.held) pts.push({ ts: T, d: now.d, dir: now.dir });
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1];
-      const b = pts[i];
-      if (!continuous(a, b)) continue;
-      const age = (T - b.ts) / HISTORY_MS;
-      ctx.strokeStyle = hexA(color, 0.08 + 0.62 * (1 - age) ** 1.6);
-      ctx.beginPath();
-      ctx.moveTo(posFor(t.line, a.d).x, maryY(T, a.ts));
-      ctx.lineTo(posFor(t.line, b.d).x, maryY(T, b.ts));
-      ctx.stroke();
-    }
-  }
-  ctx.restore();
 }
 
 function drawTrains(T, wall) {
@@ -320,57 +285,55 @@ function drawTrains(T, wall) {
     if (!s) continue;
     const alpha = s.held > FADE_AFTER_MS ? Math.max(0, 1 - (s.held - FADE_AFTER_MS) / FADE_MS) : 1;
     if (alpha <= 0) continue;
-    if (alpha === 1) counts[t.line] = (counts[t.line] || 0) + 1;
+    if (alpha === 1) counts[t.line]++;
     const color = COLORS[t.line];
-    const side = s.dir === 'E' ? 1 : -1;
     const p = posFor(t.line, s.d);
-    const ox = -p.ty * TRAIN_OFFSET * side;
-    const oy = p.tx * TRAIN_OFFSET * side;
 
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.lineCap = 'round';
-    let prev = { x: p.x + ox, y: p.y + oy };
-    for (let k = 1; k <= 8; k++) {
+    let prev = p;
+    for (let k = 1; k <= 10; k++) {
       const back = sampleAt(t.pts, T - k * 3000);
       if (!back || back.dir !== s.dir) break;
       const q = posFor(t.line, back.d);
-      const pt = { x: q.x - q.ty * TRAIN_OFFSET * side, y: q.y + q.tx * TRAIN_OFFSET * side };
-      ctx.strokeStyle = hexA(color, 0.5 * (1 - k / 9));
-      ctx.lineWidth = 5 - k * 0.45;
+      ctx.strokeStyle = hexA(color, 0.6 * (1 - k / 11));
+      ctx.lineWidth = 8 - k * 0.6;
       ctx.beginPath();
       ctx.moveTo(prev.x, prev.y);
-      ctx.lineTo(pt.x, pt.y);
+      ctx.lineTo(q.x, q.y);
       ctx.stroke();
-      prev = pt;
+      prev = q;
     }
 
-    const facing = s.dir === 'E' ? 1 : -1;
-    ctx.translate(p.x + ox, p.y + oy);
+    const towardIncreasing = (s.dir === 'E') === lines[t.line].eastIsIncreasing;
+    const facing = towardIncreasing ? 1 : -1;
+    ctx.translate(p.x, p.y);
     ctx.rotate(Math.atan2(p.ty * facing, p.tx * facing));
     ctx.shadowColor = color;
-    ctx.shadowBlur = 22;
+    ctx.shadowBlur = 26;
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.roundRect(-12, -4, 24, 8, 4);
+    ctx.roundRect(-17, -6, 34, 12, 6);
     ctx.fill();
-    ctx.shadowBlur = 8;
+    ctx.shadowBlur = 10;
     ctx.shadowColor = '#fff';
-    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.fillStyle = '#fff';
     ctx.beginPath();
-    ctx.roundRect(5, -2.5, 6, 5, 2.5);
+    ctx.roundRect(7, -3.5, 8, 7, 3.5);
     ctx.fill();
     ctx.restore();
   }
 
-  const homeNode = layout.lines.BLUE?.nodes.find((n) => n.station.name === meta.home.mapName);
-  if (homeNode) {
+  const home = stationMarkers().find((m) => m.name === meta.home.mapName);
+  if (home) {
     const phase = (wall % 3200) / 3200;
+    const grow = phase * 22;
     ctx.save();
-    ctx.strokeStyle = `rgba(233,238,244,${0.45 * (1 - phase)})`;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = `rgba(255,255,255,${0.55 * (1 - phase)})`;
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.roundRect(homeNode.x - 7 - phase * 16, GREEN_Y - 7 - phase * 16, 14 + phase * 32, BLUE_Y - GREEN_Y + 14 + phase * 32, 7 + phase * 16);
+    ctx.roundRect(home.x - 9 - grow, home.top - 9 - grow, 18 + grow * 2, home.bottom - home.top + 18 + grow * 2, 9 + grow);
     ctx.stroke();
     ctx.restore();
   }
@@ -380,20 +343,17 @@ function drawTrains(T, wall) {
 let lastCountsAt = -Infinity;
 
 function frame(wall) {
-  if (document.body.classList.contains('asleep') || !layout) {
-    requestAnimationFrame(frame);
-    return;
-  }
-  const T = Date.now() - LAG_MS;
-  ctx.clearRect(0, 0, MAP_W, H);
-  ctx.drawImage(staticLayer, 0, 0);
-  drawMarey(T);
-  const counts = drawTrains(T, wall);
-  if (wall - lastCountsAt > 1000) {
-    lastCountsAt = wall;
-    for (const line of Object.keys(COLORS)) {
-      const el = document.getElementById(`count${line}`);
-      if (el) el.textContent = counts[line] ?? 0;
+  if (!document.body.classList.contains('asleep')) {
+    const T = Date.now() - LAG_MS;
+    ctx.clearRect(0, 0, MAP_W, H);
+    ctx.drawImage(staticLayer, 0, 0);
+    const counts = drawTrains(T, wall);
+    if (wall - lastCountsAt > 1000) {
+      lastCountsAt = wall;
+      for (const line of Object.keys(COLORS)) {
+        const el = document.getElementById(`count${line}`);
+        if (el) el.textContent = counts[line] ?? 0;
+      }
     }
   }
   requestAnimationFrame(frame);
@@ -406,7 +366,15 @@ function minutesUntil(at) {
 function bigHtml(at, extraClass = '') {
   const m = minutesUntil(at);
   if (m <= 0) return `<div class="big due ${extraClass}"><span class="n">Due</span></div>`;
-  return `<div class="big ${extraClass}"><span class="n">${m}</span><span class="u">MIN</span></div>`;
+  return `<div class="big ${extraClass}"><span class="n">${m}</span><span class="u">min</span></div>`;
+}
+
+function laterHtml(list) {
+  const later = list
+    .slice(0, 3)
+    .map((a) => `<span class="${a.live === false ? 'sched' : ''}">${Math.max(0, minutesUntil(a.at))}</span>`)
+    .join(', ');
+  return later ? `then ${later}` : '&nbsp;';
 }
 
 function renderHome() {
@@ -414,9 +382,8 @@ function renderHome() {
   const groups = new Map();
   for (const a of homeArrivals) {
     if (a.at < Date.now() - 30 * 1000) continue;
-    const key = a.dir;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(a);
+    if (!groups.has(a.dir)) groups.set(a.dir, []);
+    groups.get(a.dir).push(a);
   }
   if (!groups.size) {
     rows.innerHTML = '<div class="empty">No trains reported</div>';
@@ -427,16 +394,11 @@ function renderHome() {
     .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
     .map(([dir, list]) => {
       const [next, ...rest] = list;
-      const color = COLORS[next.line];
-      const later = rest
-        .slice(0, 3)
-        .map((a) => `<span class="${a.live ? '' : 'sched'}">${Math.max(0, minutesUntil(a.at))}</span>`)
-        .join(' · ');
-      return `<div class="row" style="--c:${color}">
+      return `<div class="row" style="--c:${COLORS[next.line]}">
         <div class="dest">
           <div class="dir"><i></i>${dir === 'E' ? 'Eastbound' : dir === 'W' ? 'Westbound' : dir}</div>
           <div class="dest-name">${prettyDest(next.dest)}</div>
-          <div class="later">${later ? `then ${later} min` : '&nbsp;'}</div>
+          <div class="later">${laterHtml(rest)}</div>
         </div>
         ${bigHtml(next.at, next.live ? '' : 'sched')}
       </div>`;
@@ -455,31 +417,26 @@ function renderBus() {
   cols.innerHTML = busState.stops
     .map((stop) => {
       const list = stop.arrivals.filter((a) => a.at > Date.now() - 30 * 1000);
-      if (!list.length) return `<div class="col"><div class="dir">${stop.label}</div><div class="empty">No buses scheduled</div></div>`;
+      if (!list.length) return `<div class="col"><div class="dir">${stop.label}</div><div class="empty">No buses</div></div>`;
       const [next, ...rest] = list;
       const bits = [];
       if (next.miAway != null) bits.push(`${next.miAway.toFixed(1)} mi`);
-      if (next.stopsAway != null) bits.push(`${next.stopsAway} ${next.stopsAway === 1 ? 'stop' : 'stops'}`);
       if (next.lateSec != null && Math.abs(next.lateSec) >= 120) {
         const m = Math.round(Math.abs(next.lateSec) / 60);
         bits.push(`<span class="late">${m} min ${next.lateSec > 0 ? 'late' : 'early'}</span>`);
       }
-      if (!next.onTrip) bits.push('not yet departed');
-      const ticks = Array.from({ length: APPROACH_STOPS }, (_, i) => `<span class="tick" style="left:calc(${(i / APPROACH_STOPS) * 100}% )"></span>`).join('');
+      if (!next.onTrip) bits.push('not started');
+      const ticks = Array.from({ length: APPROACH_STOPS }, (_, i) => `<span class="tick" style="left:${(i / APPROACH_STOPS) * 100}%"></span>`).join('');
       const busDots = list
         .filter((a) => a.stopsAway != null && a.stopsAway <= APPROACH_STOPS)
-        .map((a) => `<span class="bus" style="left:calc(${((APPROACH_STOPS - a.stopsAway) / APPROACH_STOPS) * 100}% - 6px)"></span>`)
+        .map((a) => `<span class="bus" style="left:calc(${((APPROACH_STOPS - a.stopsAway) / APPROACH_STOPS) * 100}% - 15px)"></span>`)
         .join('');
-      const later = rest
-        .slice(0, 3)
-        .map((a) => Math.max(0, minutesUntil(a.at)))
-        .join(' · ');
       return `<div class="col">
         <div class="dir">${stop.label}</div>
         ${bigHtml(next.at)}
         <div class="meta">${bits.join(' · ') || '&nbsp;'}</div>
         <div class="approach">${ticks}${busDots}<span class="stop"></span></div>
-        <div class="later">${later ? `then ${later} min` : '&nbsp;'}</div>
+        <div class="later">${laterHtml(rest)}</div>
       </div>`;
     })
     .join('');
@@ -492,7 +449,7 @@ function renderStatus() {
   document.getElementById('railLive').classList.toggle('stale', railStale);
   const status = document.getElementById('status');
   status.classList.toggle('stale', railStale || busStale);
-  status.textContent = railStale ? 'Rail feed stale' : busStale ? 'Bus feed stale' : 'Live';
+  status.textContent = railStale ? 'Rail stale' : busStale ? 'Bus stale' : '';
   document.getElementById('clock').textContent = new Date().toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -522,40 +479,30 @@ async function pollState() {
   renderStatus();
 }
 
-async function pollHistory() {
-  try {
-    ingest((await getJson('/api/history')).trains);
-  } catch (err) {
-    console.error(err);
-  }
+function brighten(hex) {
+  const n = Number.parseInt(hex.slice(1), 16);
+  const lift = (v) => Math.min(255, Math.round(v * 1.15 + 20));
+  return `rgb(${lift(n >> 16)},${lift((n >> 8) & 255)},${lift(n & 255)})`;
 }
 
 async function init() {
   fitStage();
   addEventListener('resize', fitStage);
-  await document.fonts.load('500 14px Inter');
-  await document.fonts.load('700 15px Inter');
-  meta = await getJson('/api/meta');
+  await document.fonts.load(LABEL_FONT);
+  await document.fonts.load('750 26px Inter');
+  [meta, proj] = await Promise.all([getJson('/api/meta'), getJson('/basemap.json')]);
   document.getElementById('homeTitle').textContent = meta.home.label;
   document.getElementById('busTitle').textContent = meta.bus.title;
   document.getElementById('busBadge').textContent = meta.bus.route;
   if (meta.bus.color) document.documentElement.style.setProperty('--bus', brighten(`#${meta.bus.color}`));
   canvas.width = MAP_W;
   canvas.height = H;
-  layout = buildLayout();
+  lines = buildLines();
   drawStatic();
-  await pollHistory();
   await pollState();
   setInterval(pollState, 5000);
-  setInterval(pollHistory, 5 * 60 * 1000);
   setInterval(renderStatus, 1000);
   requestAnimationFrame(frame);
-}
-
-function brighten(hex) {
-  const n = Number.parseInt(hex.slice(1), 16);
-  const lift = (v) => Math.min(255, Math.round(v * 1.15 + 20));
-  return `rgb(${lift(n >> 16)},${lift((n >> 8) & 255)},${lift(n & 255)})`;
 }
 
 init();
