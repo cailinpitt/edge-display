@@ -9,6 +9,7 @@ const FADE_AFTER_MS = 60 * 1000;
 const FADE_MS = 60 * 1000;
 const MAX_STEP_FT = 5000;
 const HEADING_SPAN_FT = 150;
+const TRAIL_STEPS = 20;
 const STALE_MS = 3 * 60 * 1000;
 
 // Green shares Blue's track downtown; draw it just north so both stay visible.
@@ -284,6 +285,18 @@ function drawStatic() {
   }
 }
 
+// Pointing along +x: rounded tail, arrow nose.
+function trainPath() {
+  ctx.beginPath();
+  ctx.moveTo(-17, -11);
+  ctx.lineTo(13, -11);
+  ctx.lineTo(27, 0);
+  ctx.lineTo(13, 11);
+  ctx.lineTo(-17, 11);
+  ctx.arc(-17, 0, 11, Math.PI / 2, -Math.PI / 2);
+  ctx.closePath();
+}
+
 function drawTrains(T, wall) {
   const counts = { BLUE: 0, GREEN: 0 };
   for (const t of trains.values()) {
@@ -299,12 +312,13 @@ function drawTrains(T, wall) {
     ctx.globalAlpha = alpha;
     ctx.lineCap = 'round';
     let prev = p;
-    for (let k = 1; k <= 10; k++) {
+    for (let k = 1; k <= TRAIL_STEPS; k++) {
       const back = sampleAt(t.pts, T - k * 3000);
       if (!back || back.dir !== s.dir) break;
       const q = posFor(t.line, back.d);
-      ctx.strokeStyle = hexA(color, 0.6 * (1 - k / 11));
-      ctx.lineWidth = 8 - k * 0.6;
+      const fade = 1 - k / (TRAIL_STEPS + 1);
+      ctx.strokeStyle = hexA(color, 0.75 * fade);
+      ctx.lineWidth = 3 + 9 * fade;
       ctx.beginPath();
       ctx.moveTo(prev.x, prev.y);
       ctx.lineTo(q.x, q.y);
@@ -315,18 +329,30 @@ function drawTrains(T, wall) {
     const towardIncreasing = (s.dir === 'E') === lines[t.line].eastIsIncreasing;
     ctx.translate(p.x, p.y);
     ctx.rotate(headingFor(t.line, s.d) + (towardIncreasing ? 0 : Math.PI));
+    trainPath();
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(4,7,11,0.95)';
+    ctx.stroke();
     ctx.shadowColor = color;
-    ctx.shadowBlur = 26;
+    ctx.shadowBlur = 30;
     ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.roundRect(-17, -6, 34, 12, 6);
     ctx.fill();
-    ctx.shadowBlur = 10;
-    ctx.shadowColor = '#fff';
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.roundRect(7, -3.5, 8, 7, 3.5);
-    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.stroke();
+
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#fff';
+    for (const cx of [-9, 3]) {
+      ctx.beginPath();
+      ctx.moveTo(cx - 4, -6);
+      ctx.lineTo(cx + 3, 0);
+      ctx.lineTo(cx - 4, 6);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
