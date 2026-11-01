@@ -194,7 +194,7 @@ const server = Http.createServer((req, res) => {
   try {
     const cfg = readConfig();
     if (req.url === '/api/meta') {
-      return sendJson(res, { rail: railMeta, home: cfg.rail.home, bus: { route: cfg.bus.route, title: cfg.bus.title, color: busRoute?.route_color } });
+      return sendJson(res, { timezone: cfg.timezone, rail: railMeta, home: cfg.rail.home, bus: { route: cfg.bus.route, title: cfg.bus.title, color: busRoute?.route_color } });
     }
     if (req.url === '/api/state') {
       return sendJson(res, {
