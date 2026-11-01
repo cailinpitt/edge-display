@@ -8,6 +8,7 @@ const KEEP_MS = 5 * 60 * 1000;
 const FADE_AFTER_MS = 60 * 1000;
 const FADE_MS = 60 * 1000;
 const MAX_STEP_FT = 5000;
+const HEADING_SPAN_FT = 150;
 const STALE_MS = 3 * 60 * 1000;
 
 // Green shares Blue's track downtown; draw it just north so both stay visible.
@@ -28,6 +29,8 @@ const LABEL_PRIORITY = [
   'KING MEMORIAL',
 ];
 const HEADER_BOX = { x: 0, y: 0, w: 760, h: 100 };
+// Keep labels clear of the fade on the map's right edge (style.css #map::after).
+const EDGE_FADE_PX = 44;
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -83,8 +86,9 @@ function buildLines() {
 
 function posFor(line, d) {
   const { pts } = lines[line];
-  if (d <= pts[0].d) return withTangent(pts, 0, 0);
-  if (d >= pts[pts.length - 1].d) return withTangent(pts, pts.length - 2, 1);
+  if (d <= pts[0].d) return { x: pts[0].x, y: pts[0].y };
+  const last = pts[pts.length - 1];
+  if (d >= last.d) return { x: last.x, y: last.y };
   let lo = 0;
   let hi = pts.length - 1;
   while (hi - lo > 1) {
@@ -93,14 +97,16 @@ function posFor(line, d) {
     else hi = mid;
   }
   const span = pts[hi].d - pts[lo].d;
-  return withTangent(pts, lo, span ? (d - pts[lo].d) / span : 0);
+  const t = span ? (d - pts[lo].d) / span : 0;
+  return { x: pts[lo].x + (pts[hi].x - pts[lo].x) * t, y: pts[lo].y + (pts[hi].y - pts[lo].y) * t };
 }
 
-function withTangent(pts, i, t) {
-  const a = pts[i];
-  const b = pts[i + 1];
-  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, tx: (b.x - a.x) / len, ty: (b.y - a.y) / len };
+// The GTFS shape has many repeated and near-duplicate points, so take the heading
+// across a stretch of track rather than from the segment under the train.
+function headingFor(line, d) {
+  const a = posFor(line, d - HEADING_SPAN_FT);
+  const b = posFor(line, d + HEADING_SPAN_FT);
+  return Math.atan2(b.y - a.y, b.x - a.x);
 }
 
 function ingest(rows) {
@@ -223,7 +229,7 @@ function placeLabels(c, markers) {
       { x: m.x - w / 2, y: m.top - 52 - h },
     ];
     for (const o of options) {
-      o.x = Math.min(Math.max(o.x, 14), MAP_W - 14 - w);
+      o.x = Math.min(Math.max(o.x, 14), MAP_W - EDGE_FADE_PX - w);
       const box = { x: o.x - 4, y: o.y - 2, w: w + 8, h: h + 4 };
       if (box.y < 10 || box.y + box.h > H - 10) continue;
       if (placed.some((p) => overlaps(box, p))) continue;
@@ -307,9 +313,8 @@ function drawTrains(T, wall) {
     }
 
     const towardIncreasing = (s.dir === 'E') === lines[t.line].eastIsIncreasing;
-    const facing = towardIncreasing ? 1 : -1;
     ctx.translate(p.x, p.y);
-    ctx.rotate(Math.atan2(p.ty * facing, p.tx * facing));
+    ctx.rotate(headingFor(t.line, s.d) + (towardIncreasing ? 0 : Math.PI));
     ctx.shadowColor = color;
     ctx.shadowBlur = 26;
     ctx.fillStyle = color;
