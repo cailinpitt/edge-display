@@ -1,0 +1,13 @@
+{
+  "name": "edge-display",
+  "private": true,
+  "description": "Glanceable MARTA display for the Corsair Xeneon Edge on cailin-server",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node bin/dev.js",
+    "deploy": "bin/deploy.sh"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

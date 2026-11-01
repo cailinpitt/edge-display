@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Edge</title>
+<style>
+  @font-face { font-family: Inter; src: url(fonts/inter.woff2) format('woff2'); font-weight: 100 900; }
+  html, body { margin: 0; height: 100%; background: #000; color: #e8eef5; font-family: Inter, sans-serif; cursor: none; }
+  body { display: grid; place-items: center; }
+  h1 { font-weight: 200; font-size: 96px; letter-spacing: -0.02em; margin: 0; }
+  p { color: #6b7a8c; letter-spacing: 0.3em; text-transform: uppercase; font-size: 18px; text-align: center; }
+</style>
+</head>
+<body>
+  <div>
+    <h1>Hello from cailin-server</h1>
+    <p id="size"></p>
+  </div>
+  <script>
+    document.getElementById('size').textContent = `${innerWidth} × ${innerHeight} · ${new Date().toLocaleTimeString()}`;
+  </script>
+</body>
+</html>

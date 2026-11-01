@@ -1,0 +1,26 @@
+{
+  "port": 8787,
+  "insightsDir": "../atlanta-transit-insights",
+  "timezone": "America/New_York",
+  "sleep": {
+    "enabled": true,
+    "start": "22:00",
+    "end": "07:00"
+  },
+  "rail": {
+    "lines": ["BLUE", "GREEN"],
+    "home": {
+      "label": "Inman Park",
+      "mapName": "INMAN PARK-REYNOLDSTOWN Station",
+      "feedName": "INMAN PARK STATION"
+    }
+  },
+  "bus": {
+    "route": "2",
+    "title": "Moreland @ Euclid",
+    "stops": [
+      { "stopId": "900052", "label": "To Candler Park" },
+      { "stopId": "900055", "label": "To North Ave" }
+    ]
+  }
+}

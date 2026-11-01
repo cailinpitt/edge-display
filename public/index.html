@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Edge</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="stage">
+  <section id="map">
+    <canvas id="canvas"></canvas>
+    <header class="map-head">
+      <div class="eyebrow">MARTA Rail<span class="live" id="railLive"></span></div>
+      <div class="pills">
+        <span class="pill" style="--c: var(--blue)"><i></i>Blue <b id="countBLUE">–</b></span>
+        <span class="pill" style="--c: var(--green)"><i></i>Green <b id="countGREEN">–</b></span>
+      </div>
+    </header>
+    <div class="marey-legend">Train paths · last 40 min</div>
+  </section>
+
+  <aside id="panel">
+    <div class="block" id="homeBlock">
+      <div class="block-head">
+        <span class="eyebrow" id="homeTitle">Home</span>
+        <span class="clock" id="clock"></span>
+      </div>
+      <div class="rows" id="homeRows"></div>
+    </div>
+    <div class="block" id="busBlock">
+      <div class="block-head">
+        <span class="eyebrow"><span class="badge" id="busBadge"></span><span id="busTitle"></span></span>
+        <span class="status" id="status"></span>
+      </div>
+      <div class="cols" id="busCols"></div>
+    </div>
+  </aside>
+</div>
+<div id="sleep"></div>
+<script src="app.js"></script>
+</body>
+</html>
