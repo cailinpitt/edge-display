@@ -1,50 +1,31 @@
-// Dev-time: render OSM buildings + roads into public/basemap.png and write the
-// matching projection to public/basemap.json.
+// Dev-time: render OSM buildings + roads for a view into public/basemap-<view>.png
+// and write its projection to public/basemap-<view>.json.
 //
-//   node scripts/build-basemap.js <osm-dir>
+//   node scripts/build-basemap.js <view> <osm-dir>
 //
-// <osm-dir> holds Overpass JSON: buildings.json (way["building"], out tags geom)
-// and roads.json (major highways, out geom). See README for the queries.
+// <osm-dir> is what scripts/fetch-osm.js wrote (buildings*.json + roads.json).
 const { execFileSync } = require('node:child_process');
 const Fs = require('node:fs');
 const Os = require('node:os');
 const Path = require('node:path');
+const { fitView, projector } = require('./views');
 
-const WIDTH = 1840;
-const HEIGHT = 720;
-const WEST_LON = -84.47003;
-const EAST_LON = -84.22953;
-const MARGIN_LEFT = 70;
-const MARGIN_RIGHT = 90;
-const ANCHOR_LAT = 33.765;
-const ANCHOR_Y = 470;
-const FT_PER_DEG_LAT = 364000;
 const FT_PER_M = 3.281;
 const FT_PER_LEVEL = 13;
 const DEFAULT_HEIGHT_FT = 22;
+const MARGIN_PX = 60;
+const FIVE_POINTS = [33.75387, -84.39157];
 const BROWSER = process.env.BROWSER || '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser';
 
-const osmDir = process.argv[2];
-if (!osmDir) {
-  console.error('usage: node scripts/build-basemap.js <osm-dir>');
+const [viewId, osmDir] = process.argv.slice(2);
+if (!viewId || !osmDir) {
+  console.error('usage: node scripts/build-basemap.js <view> <osm-dir>');
   process.exit(1);
 }
 
-const pxPerDegLon = (WIDTH - MARGIN_LEFT - MARGIN_RIGHT) / (EAST_LON - WEST_LON);
-const pxPerDegLat = pxPerDegLon / Math.cos((ANCHOR_LAT * Math.PI) / 180);
-const projection = {
-  width: WIDTH,
-  height: HEIGHT,
-  lon0: WEST_LON - MARGIN_LEFT / pxPerDegLon,
-  lat0: ANCHOR_LAT + ANCHOR_Y / pxPerDegLat,
-  pxPerDegLon,
-  pxPerDegLat,
-};
-
-const project = ({ lat, lon }) => [
-  Math.round((lon - projection.lon0) * pxPerDegLon * 10) / 10,
-  Math.round((projection.lat0 - lat) * pxPerDegLat * 10) / 10,
-];
+const projection = fitView(viewId);
+const toPx = projector(projection);
+const project = ({ lat, lon }) => toPx(lat, lon).map((v) => Math.round(v * 10) / 10);
 
 function heightFt(tags = {}) {
   const h = Number.parseFloat(tags.height);
@@ -54,18 +35,30 @@ function heightFt(tags = {}) {
   return DEFAULT_HEIGHT_FT;
 }
 
-const read = (name) => JSON.parse(Fs.readFileSync(Path.join(osmDir, name), 'utf8')).elements;
+const onCanvas = (pts) =>
+  pts.some(([x, y]) => x > -MARGIN_PX && x < projection.width + MARGIN_PX && y > -MARGIN_PX && y < projection.height + MARGIN_PX);
 
-const buildings = read('buildings.json')
-  .filter((w) => w.type === 'way' && w.geometry?.length > 2)
-  .map((w) => ({ pts: w.geometry.map(project), ft: Math.round(heightFt(w.tags)) }));
-const roads = read('roads.json')
-  .filter((w) => w.type === 'way' && w.geometry?.length > 1)
-  .map((w) => ({ pts: w.geometry.map(project), cls: w.tags?.highway }));
+function readWays(pattern) {
+  const seen = new Map();
+  for (const f of Fs.readdirSync(osmDir).filter((n) => pattern.test(n))) {
+    for (const el of JSON.parse(Fs.readFileSync(Path.join(osmDir, f), 'utf8')).elements) {
+      if (el.type === 'way' && el.geometry?.length > 1) seen.set(el.id, el);
+    }
+  }
+  return [...seen.values()];
+}
 
-console.log(`${buildings.length} buildings, ${roads.length} roads`);
+const buildings = readWays(/^buildings.*\.json$/)
+  .filter((w) => w.geometry.length > 2)
+  .map((w) => ({ pts: w.geometry.map(project), ft: Math.round(heightFt(w.tags)) }))
+  .filter((b) => onCanvas(b.pts));
+const roads = readWays(/^roads\.json$/)
+  .map((w) => ({ pts: w.geometry.map(project), cls: w.tags?.highway }))
+  .filter((r) => onCanvas(r.pts));
 
-const data = { pxPerFt: pxPerDegLat / FT_PER_DEG_LAT, buildings, roads };
+console.log(`${viewId}: ${buildings.length} buildings, ${roads.length} roads, angle ${projection.angle}°`);
+
+const data = { pxPerFt: projection.pxPerFt, glow: toPx(...FIVE_POINTS), buildings, roads };
 const tmp = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'basemap-'));
 const html = Path.join(tmp, 'render.html');
 Fs.writeFileSync(
@@ -76,16 +69,17 @@ Fs.writeFileSync(
   ),
 );
 
-const out = Path.join(__dirname, '..', 'public', 'basemap.png');
+const publicDir = Path.join(__dirname, '..', 'public');
+const out = Path.join(publicDir, `basemap-${viewId}.png`);
 execFileSync(BROWSER, [
   '--headless=new',
   '--hide-scrollbars',
   '--force-device-scale-factor=1',
-  `--window-size=${WIDTH},${HEIGHT}`,
-  '--virtual-time-budget=20000',
+  `--window-size=${projection.width},${projection.height}`,
+  '--virtual-time-budget=60000',
   `--screenshot=${out}`,
   `file://${html}`,
 ], { stdio: 'ignore' });
-Fs.writeFileSync(Path.join(__dirname, '..', 'public', 'basemap.json'), `${JSON.stringify(projection, null, 2)}\n`);
+Fs.writeFileSync(Path.join(publicDir, `basemap-${viewId}.json`), `${JSON.stringify(projection, null, 2)}\n`);
 Fs.rmSync(tmp, { recursive: true });
 console.log(`wrote ${out}`);

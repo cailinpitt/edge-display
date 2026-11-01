@@ -9,7 +9,7 @@
 <script>
 /*DATA*/
 // Oblique "2.5D": roofs are lifted straight up the screen by height, so
-// buildings further south are drawn last and overlap the ones behind them.
+// buildings lower on screen are drawn last and overlap the ones behind them.
 const EXAGGERATION = 2.4;
 const ROAD_WIDTH = { motorway: 2.4, trunk: 2, primary: 1.5, secondary: 1.1, tertiary: 0.7 };
 
@@ -17,7 +17,7 @@ const c = document.getElementById('c').getContext('2d');
 c.fillStyle = '#04070b';
 c.fillRect(0, 0, 1840, 720);
 
-const glow = c.createRadialGradient(830, 400, 0, 830, 400, 700);
+const glow = c.createRadialGradient(DATA.glow[0], DATA.glow[1], 0, DATA.glow[0], DATA.glow[1], 700);
 glow.addColorStop(0, 'rgba(30, 80, 140, 0.16)');
 glow.addColorStop(1, 'rgba(30, 80, 140, 0)');
 c.fillStyle = glow;

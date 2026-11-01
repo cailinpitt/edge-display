@@ -1,6 +1,6 @@
 const MAP_W = 1840;
 const H = 720;
-const COLORS = { BLUE: '#2b9bff', GREEN: '#1fd17a' };
+const COLORS = { BLUE: '#2b9bff', GREEN: '#1fd17a', RED: '#ff4d6a', GOLD: '#ffc23d' };
 
 // Trains are drawn this far in the past so there is always a sample on both sides to interpolate between.
 const LAG_MS = 40 * 1000;
@@ -11,43 +11,83 @@ const MAX_STEP_FT = 5000;
 const HEADING_SPAN_FT = 150;
 const TRAIL_STEPS = 20;
 const STALE_MS = 3 * 60 * 1000;
+const FADE_VIEW_MS = 1500;
+// Swipe: past this fraction of the map (or a quick flick) switches view; otherwise it springs back.
+const SWIPE_COMMIT = 0.15;
+const FLICK_PX_PER_MS = 0.6;
+const TAP_SLOP_PX = 12;
+const SETTLE_MS = 320;
+const MANUAL_HOLD_MS = 2 * 60 * 1000;
 
-// Green shares Blue's track downtown; draw it just north so both stay visible.
-const LINE_SHIFT = { BLUE: 0, GREEN: -13 };
+// Lines that share track are nudged apart (in screen px) so both stay visible.
+const LINE_SHIFT = { GREEN: { x: 0, y: -13 }, GOLD: { x: 0, y: 13 } };
 const LABEL_FONT = '600 24px Inter';
-const LABEL_PRIORITY = [
-  'HAMILTON E HOLMES',
-  'INDIAN CREEK',
-  'BANKHEAD',
-  'FIVE POINTS',
-  'EDGEWOOD-CANDLER PARK',
-  'DECATUR',
-  'ASHBY',
-  'WEST LAKE',
-  'EAST LAKE',
-  'KENSINGTON',
-  'AVONDALE',
-  'KING MEMORIAL',
-];
+// Stations to label per view, most important first; the rest get only a dot.
+const LABEL_PRIORITY = {
+  eastwest: [
+    'HAMILTON E HOLMES',
+    'INDIAN CREEK',
+    'BANKHEAD',
+    'FIVE POINTS',
+    'EDGEWOOD-CANDLER PARK',
+    'DECATUR',
+    'ASHBY',
+    'WEST LAKE',
+    'EAST LAKE',
+    'KENSINGTON',
+    'AVONDALE',
+    'KING MEMORIAL',
+  ],
+  northsouth: [
+    'AIRPORT',
+    'NORTH SPRINGS',
+    'DORAVILLE',
+    'LINDBERGH CENTER',
+    'MIDTOWN',
+    'BUCKHEAD',
+    'EAST POINT',
+    'WEST END',
+    'DUNWOODY',
+    'CHAMBLEE',
+    'COLLEGE PARK',
+    'LENOX',
+    'MEDICAL CENTER',
+    'OAKLAND CITY',
+    'ARTS CENTER',
+    'BROOKHAVEN-OGLETHORPE',
+    'SANDY SPRINGS',
+    'LAKEWOOD-FT MCPHERSON',
+    'NORTH AVE',
+    'PEACHTREE CENTER',
+  ],
+};
+const DIR_NAMES = { E: 'Eastbound', W: 'Westbound', N: 'Northbound', S: 'Southbound' };
 const HEADER_BOX = { x: 0, y: 0, w: 760, h: 100 };
 // Keep labels clear of the fade on the map's right edge (style.css #map::after).
 const EDGE_FADE_PX = 44;
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const staticLayer = document.createElement('canvas');
 
 let meta = null;
-let proj = null;
-let lines = {};
-let homeArrivals = [];
+let views = [];
+let viewIdx = 0;
+let viewSince = 0;
+let fadeFrom = null;
+let stageScale = 1;
+let drag = null;
+let settle = null;
+let holdUntil = 0;
+// Which way along each line's distance axis is north / east, from its geography.
+const lineAxis = {};
+let homeArrivals = {};
 let busState = null;
 let railUpdatedAt = 0;
 const trains = new Map();
 
 function fitStage() {
-  const scale = Math.min(innerWidth / 2560, innerHeight / H);
-  document.getElementById('stage').style.transform = `scale(${scale})`;
+  stageScale = Math.min(innerWidth / 2560, innerHeight / H);
+  document.getElementById('stage').style.transform = `scale(${stageScale})`;
 }
 
 const baseName = (name) => name.replace(/ Station$/i, '');
@@ -56,7 +96,10 @@ function prettyStation(name) {
   const short = baseName(name)
     .replace('HAMILTON E HOLMES', 'H.E. HOLMES')
     .replace('INMAN PARK-REYNOLDSTOWN', 'INMAN PARK')
-    .replace('EDGEWOOD-CANDLER PARK', 'EDGEWOOD');
+    .replace('EDGEWOOD-CANDLER PARK', 'EDGEWOOD')
+    .replace('LINDBERGH CENTER', 'LINDBERGH')
+    .replace('LAKEWOOD-FT MCPHERSON', 'LAKEWOOD')
+    .replace('BROOKHAVEN-OGLETHORPE', 'BROOKHAVEN');
   return short.toLowerCase().replace(/(^|[\s.-])\w/g, (m) => m.toUpperCase());
 }
 
@@ -64,29 +107,47 @@ function prettyDest(dest) {
   return dest.replace('Hamilton E. Holmes', 'H.E. Holmes');
 }
 
-function project(lat, lon) {
-  return [(lon - proj.lon0) * proj.pxPerDegLon, (proj.lat0 - lat) * proj.pxPerDegLat];
+// Same projection as scripts/views.js: rotate east/north offsets by the view's angle.
+function projector(p) {
+  const a = (p.angle * Math.PI) / 180;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  return (lat, lon) => {
+    const u = (lon - p.lonRef) * p.cosLat;
+    const v = lat - p.latRef;
+    return [p.x0 + p.scale * (u * cos + v * sin), p.y0 + p.scale * (u * sin - v * cos)];
+  };
 }
 
-function buildLines() {
-  const out = {};
-  for (const l of meta.rail) {
-    const shift = LINE_SHIFT[l.line] || 0;
+function buildView(cfg, proj) {
+  const project = projector(proj);
+  const view = { ...cfg, lines: {} };
+  for (const l of meta.rail.filter((r) => cfg.lines.includes(r.line))) {
+    const shift = LINE_SHIFT[l.line] || { x: 0, y: 0 };
     const pts = l.points.map(([lat, lon, d]) => {
       const [x, y] = project(lat, lon);
-      return { x, y: y + shift, d };
+      return { x: x + shift.x, y: y + shift.y, d };
     });
-    out[l.line] = {
-      pts,
-      stations: l.stations,
-      eastIsIncreasing: pts[pts.length - 1].x > pts[0].x,
-    };
+    view.lines[l.line] = { pts, stations: l.stations };
   }
-  return out;
+  view.markers = stationMarkers(view);
+  view.homeMarker = view.markers.find((m) => m.name === cfg.home.mapName);
+  view.staticLayer = drawStatic(view);
+  view.img = document.createElement('img');
+  view.img.className = 'basemap';
+  view.img.src = `basemap-${cfg.id}.png`;
+  document.getElementById('map').prepend(view.img);
+  return view;
 }
 
-function posFor(line, d) {
-  const { pts } = lines[line];
+function towardIncreasing(line, dir) {
+  const { dLat, dLon } = lineAxis[line];
+  if (dir === 'N' || dir === 'S') return (dir === 'N') === dLat > 0;
+  return (dir === 'E') === dLon > 0;
+}
+
+function posFor(view, line, d) {
+  const { pts } = view.lines[line];
   if (d <= pts[0].d) return { x: pts[0].x, y: pts[0].y };
   const last = pts[pts.length - 1];
   if (d >= last.d) return { x: last.x, y: last.y };
@@ -104,15 +165,15 @@ function posFor(line, d) {
 
 // The GTFS shape has many repeated and near-duplicate points, so take the heading
 // across a stretch of track rather than from the segment under the train.
-function headingFor(line, d) {
-  const a = posFor(line, d - HEADING_SPAN_FT);
-  const b = posFor(line, d + HEADING_SPAN_FT);
+function headingFor(view, line, d) {
+  const a = posFor(view, line, d - HEADING_SPAN_FT);
+  const b = posFor(view, line, d + HEADING_SPAN_FT);
   return Math.atan2(b.y - a.y, b.x - a.x);
 }
 
 function ingest(rows) {
   for (const r of rows) {
-    if (!lines[r.line]) continue;
+    if (!lineAxis[r.line]) continue;
     const key = `${r.line}:${r.id}`;
     let t = trains.get(key);
     if (!t) {
@@ -177,12 +238,12 @@ function stroke(c, pts, width, color, blur) {
   c.restore();
 }
 
-// One marker per station; where Blue and Green both stop, a pill spans the two tracks.
-function stationMarkers() {
+// One marker per station; where two lines both stop, a pill spans the two tracks.
+function stationMarkers(view) {
   const byName = new Map();
-  for (const [line, l] of Object.entries(lines)) {
+  for (const [line, l] of Object.entries(view.lines)) {
     for (const s of l.stations) {
-      const p = posFor(line, s.distFt);
+      const p = posFor(view, line, s.distFt);
       if (!byName.has(s.name)) byName.set(s.name, { name: s.name, pts: [] });
       byName.get(s.name).pts.push({ line, x: p.x, y: p.y });
     }
@@ -203,14 +264,16 @@ function stationMarkers() {
 const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 // Greedy: most important stations first, each tries below / above / beside its marker and is skipped if nothing fits.
-function placeLabels(c, markers) {
-  const home = baseName(meta.home.mapName);
+function placeLabels(view, c) {
+  const { markers } = view;
+  const home = baseName(view.home.mapName);
+  const priority = LABEL_PRIORITY[view.id];
   const rank = (m) => {
     const n = baseName(m.name);
     if (n === home) return -1;
-    return LABEL_PRIORITY.indexOf(n);
+    return priority ? priority.indexOf(n) : 0;
   };
-  const track = Object.values(lines).flatMap((l) =>
+  const track = Object.values(view.lines).flatMap((l) =>
     l.pts.filter((_, i) => i % 3 === 0).map((p) => ({ x: p.x - 5, y: p.y - 5, w: 10, h: 10 })),
   );
   const placed = [HEADER_BOX, ...track, ...markers.map((m) => ({ x: m.x - 12, y: m.top - 12, w: 24, h: m.bottom - m.top + 24 }))];
@@ -242,20 +305,20 @@ function placeLabels(c, markers) {
   return out;
 }
 
-function drawStatic() {
-  staticLayer.width = MAP_W;
-  staticLayer.height = H;
-  const c = staticLayer.getContext('2d');
+function drawStatic(view) {
+  const layer = document.createElement('canvas');
+  layer.width = MAP_W;
+  layer.height = H;
+  const c = layer.getContext('2d');
 
-  for (const [line, l] of Object.entries(lines)) {
+  for (const [line, l] of Object.entries(view.lines)) {
     stroke(c, l.pts, 16, hexA(COLORS[line], 0.12), 30);
     stroke(c, l.pts, 9, 'rgba(4,7,11,0.85)', 0);
     stroke(c, l.pts, 5, hexA(COLORS[line], 0.95), 14);
   }
 
-  const markers = stationMarkers();
-  const homeName = meta.home.mapName;
-  for (const m of markers) {
+  const homeName = view.home.mapName;
+  for (const m of view.markers) {
     const isHome = m.name === homeName;
     c.save();
     c.beginPath();
@@ -271,7 +334,7 @@ function drawStatic() {
     c.restore();
   }
 
-  for (const l of placeLabels(c, markers)) {
+  for (const l of placeLabels(view, c)) {
     c.save();
     c.font = l.isHome ? '750 26px Inter' : LABEL_FONT;
     c.textBaseline = 'top';
@@ -283,6 +346,7 @@ function drawStatic() {
     c.fillText(l.text, l.x, l.y);
     c.restore();
   }
+  return layer;
 }
 
 // Pointing along +x: rounded tail, arrow nose.
@@ -297,25 +361,26 @@ function trainPath() {
   ctx.closePath();
 }
 
-function drawTrains(T, wall) {
-  const counts = { BLUE: 0, GREEN: 0 };
+function drawTrains(view, T, wall) {
+  const counts = Object.fromEntries(Object.keys(view.lines).map((l) => [l, 0]));
   for (const t of trains.values()) {
+    if (!view.lines[t.line]) continue;
     const s = sampleAt(t.pts, T);
     if (!s) continue;
     const alpha = s.held > FADE_AFTER_MS ? Math.max(0, 1 - (s.held - FADE_AFTER_MS) / FADE_MS) : 1;
     if (alpha <= 0) continue;
     if (alpha === 1) counts[t.line]++;
     const color = COLORS[t.line];
-    const p = posFor(t.line, s.d);
+    const p = posFor(view, t.line, s.d);
 
     ctx.save();
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha *= alpha;
     ctx.lineCap = 'round';
     let prev = p;
     for (let k = 1; k <= TRAIL_STEPS; k++) {
       const back = sampleAt(t.pts, T - k * 3000);
       if (!back || back.dir !== s.dir) break;
-      const q = posFor(t.line, back.d);
+      const q = posFor(view, t.line, back.d);
       const fade = 1 - k / (TRAIL_STEPS + 1);
       ctx.strokeStyle = hexA(color, 0.75 * fade);
       ctx.lineWidth = 3 + 9 * fade;
@@ -326,9 +391,8 @@ function drawTrains(T, wall) {
       prev = q;
     }
 
-    const towardIncreasing = (s.dir === 'E') === lines[t.line].eastIsIncreasing;
     ctx.translate(p.x, p.y);
-    ctx.rotate(headingFor(t.line, s.d) + (towardIncreasing ? 0 : Math.PI));
+    ctx.rotate(headingFor(view, t.line, s.d) + (towardIncreasing(t.line, s.dir) ? 0 : Math.PI));
     trainPath();
     ctx.lineJoin = 'round';
     ctx.lineWidth = 6;
@@ -356,7 +420,7 @@ function drawTrains(T, wall) {
     ctx.restore();
   }
 
-  const home = stationMarkers().find((m) => m.name === meta.home.mapName);
+  const home = view.homeMarker;
   if (home) {
     const phase = (wall % 3200) / 3200;
     const grow = phase * 22;
@@ -373,21 +437,111 @@ function drawTrains(T, wall) {
 
 let lastCountsAt = -Infinity;
 
+function drawView(view, T, wall, alpha, offsetX = 0) {
+  view.img.style.opacity = alpha;
+  view.img.style.transform = offsetX ? `translateX(${offsetX}px)` : '';
+  if (alpha <= 0) return null;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(offsetX, 0);
+  ctx.drawImage(view.staticLayer, 0, 0);
+  const counts = drawTrains(view, T, wall);
+  ctx.restore();
+  return counts;
+}
+
 function frame(wall) {
   if (!document.body.classList.contains('asleep')) {
-    const T = Date.now() - LAG_MS;
+    const now = Date.now();
+    const view = views[viewIdx];
+    const idle = !drag && !settle;
+    if (idle && views.length > 1 && now > holdUntil && now - viewSince > view.seconds * 1000) {
+      showView((viewIdx + 1) % views.length);
+    }
+    const T = now - LAG_MS;
     ctx.clearRect(0, 0, MAP_W, H);
-    ctx.drawImage(staticLayer, 0, 0);
-    const counts = drawTrains(T, wall);
+    const offset = slideOffset(now);
+    const neighbor = offset ? views[(viewIdx + (offset < 0 ? 1 : -1) + views.length) % views.length] : null;
+    const f = fadeFrom ? Math.min(1, (now - viewSince) / FADE_VIEW_MS) : 1;
+    if (f >= 1) fadeFrom = null;
+    for (const v of views) {
+      if (v !== views[viewIdx] && v !== fadeFrom && v !== neighbor) drawView(v, T, wall, 0);
+    }
+    if (fadeFrom) drawView(fadeFrom, T, wall, 1 - f);
+    if (neighbor) drawView(neighbor, T, wall, 1, offset + (offset < 0 ? MAP_W : -MAP_W));
+    const counts = drawView(views[viewIdx], T, wall, f, offset);
     if (wall - lastCountsAt > 1000) {
       lastCountsAt = wall;
-      for (const line of Object.keys(COLORS)) {
+      for (const line of Object.keys(views[viewIdx].lines)) {
         const el = document.getElementById(`count${line}`);
         if (el) el.textContent = counts[line] ?? 0;
       }
     }
   }
   requestAnimationFrame(frame);
+}
+
+// Current horizontal offset of the map while dragging or springing to rest.
+function slideOffset(now) {
+  if (drag) return drag.dx;
+  if (!settle) return 0;
+  const t = Math.min(1, (now - settle.start) / SETTLE_MS);
+  const eased = 1 - (1 - t) ** 3;
+  const x = settle.from + (settle.to - settle.from) * eased;
+  if (t >= 1) {
+    const done = settle;
+    settle = null;
+    if (done.to !== 0) showView(done.targetIdx, { fade: false, manual: true });
+    return 0;
+  }
+  return x;
+}
+
+function onPointerDown(e) {
+  if (views.length < 2 || settle) return;
+  e.currentTarget.setPointerCapture(e.pointerId);
+  drag = { startX: e.clientX, dx: 0, lastX: e.clientX, lastT: e.timeStamp, vx: 0 };
+}
+
+function onPointerMove(e) {
+  if (!drag) return;
+  drag.dx = Math.max(-MAP_W, Math.min(MAP_W, (e.clientX - drag.startX) / stageScale));
+  const dt = e.timeStamp - drag.lastT;
+  if (dt > 0) drag.vx = (e.clientX - drag.lastX) / stageScale / dt;
+  drag.lastX = e.clientX;
+  drag.lastT = e.timeStamp;
+}
+
+function onPointerUp() {
+  if (!drag) return;
+  const { dx, vx } = drag;
+  drag = null;
+  if (Math.abs(dx) < TAP_SLOP_PX) {
+    showView((viewIdx + 1) % views.length, { manual: true });
+    return;
+  }
+  const commit = Math.abs(dx) > MAP_W * SWIPE_COMMIT || (Math.abs(vx) > FLICK_PX_PER_MS && Math.sign(vx) === Math.sign(dx));
+  const targetIdx = (viewIdx + (dx < 0 ? 1 : -1) + views.length) % views.length;
+  settle = { from: dx, to: commit ? Math.sign(dx) * MAP_W : 0, start: Date.now(), targetIdx };
+}
+
+function showView(i, { fade = true, manual = false } = {}) {
+  if (manual) holdUntil = Date.now() + MANUAL_HOLD_MS;
+  if (i === viewIdx) return;
+  fadeFrom = fade ? views[viewIdx] : null;
+  viewIdx = i;
+  viewSince = Date.now();
+  const head = document.querySelector('.map-head');
+  const home = document.getElementById('homeBlock');
+  head.classList.add('swapping');
+  home.classList.add('swapping');
+  setTimeout(() => {
+    renderPills();
+    renderHome();
+    lastCountsAt = -Infinity;
+    head.classList.remove('swapping');
+    home.classList.remove('swapping');
+  }, 400);
 }
 
 function minutesUntil(at) {
@@ -400,18 +554,24 @@ function bigHtml(at, extraClass = '') {
   return `<div class="big ${extraClass}"><span class="n">${m}</span><span class="u">min</span></div>`;
 }
 
-function laterHtml(list) {
+// When a direction mixes lines (e.g. Red and Gold northbound), color each time by its line.
+function laterHtml(list, mixed = false) {
   const later = list
     .slice(0, 3)
-    .map((a) => `<span class="${a.live === false ? 'sched' : ''}">${Math.max(0, minutesUntil(a.at))}</span>`)
+    .map((a) => {
+      const style = mixed && a.live !== false ? ` style="color:${COLORS[a.line]}"` : '';
+      return `<span class="${a.live === false ? 'sched' : ''}"${style}>${Math.max(0, minutesUntil(a.at))}</span>`;
+    })
     .join(', ');
   return later ? `then ${later}` : '&nbsp;';
 }
 
 function renderHome() {
+  const view = views[viewIdx];
+  document.getElementById('homeTitle').textContent = view.home.label;
   const rows = document.getElementById('homeRows');
   const groups = new Map();
-  for (const a of homeArrivals) {
+  for (const a of homeArrivals[view.id] || []) {
     if (a.at < Date.now() - 30 * 1000) continue;
     if (!groups.has(a.dir)) groups.set(a.dir, []);
     groups.get(a.dir).push(a);
@@ -425,11 +585,12 @@ function renderHome() {
     .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
     .map(([dir, list]) => {
       const [next, ...rest] = list;
+      const mixed = new Set(list.map((a) => a.line)).size > 1;
       return `<div class="row" style="--c:${COLORS[next.line]}">
         <div class="dest">
-          <div class="dir"><i></i>${dir === 'E' ? 'Eastbound' : dir === 'W' ? 'Westbound' : dir}</div>
+          <div class="dir"><i></i>${DIR_NAMES[dir] || dir}</div>
           <div class="dest-name">${prettyDest(next.dest)}</div>
-          <div class="later">${laterHtml(rest)}</div>
+          <div class="later">${laterHtml(rest, mixed)}</div>
         </div>
         ${bigHtml(next.at, next.live ? '' : 'sched')}
       </div>`;
@@ -511,6 +672,15 @@ async function pollState() {
   renderStatus();
 }
 
+function renderPills() {
+  const view = views[viewIdx];
+  const pills = Object.keys(view.lines)
+    .map((line) => `<span class="pill" style="--c:${COLORS[line]}"><i></i>${line[0]}${line.slice(1).toLowerCase()} <b id="count${line}">–</b></span>`)
+    .join('');
+  const dots = views.length > 1 ? `<span class="dots">${views.map((v) => `<i class="${v === view ? 'on' : ''}"></i>`).join('')}</span>` : '';
+  document.getElementById('pills').innerHTML = pills + dots;
+}
+
 function brighten(hex) {
   const n = Number.parseInt(hex.slice(1), 16);
   const lift = (v) => Math.min(255, Math.round(v * 1.15 + 20));
@@ -522,15 +692,28 @@ async function init() {
   addEventListener('resize', fitStage);
   await document.fonts.load(LABEL_FONT);
   await document.fonts.load('750 26px Inter');
-  [meta, proj] = await Promise.all([getJson('/api/meta'), getJson('/basemap.json')]);
-  document.getElementById('homeTitle').textContent = meta.home.label;
+  meta = await getJson('/api/meta');
+  for (const l of meta.rail) {
+    const [first, last] = [l.points[0], l.points[l.points.length - 1]];
+    lineAxis[l.line] = { dLat: last[0] - first[0], dLon: last[1] - first[1] };
+  }
+  // A view whose basemap hasn't been built is skipped rather than breaking the page.
+  const projections = await Promise.all(
+    meta.views.map((v) => getJson(`/basemap-${v.id}.json`).catch((err) => console.error(err))),
+  );
+  views = meta.views.filter((_, i) => projections[i]).map((v) => buildView(v, projections[meta.views.indexOf(v)]));
+  viewSince = Date.now();
   document.getElementById('busTitle').textContent = meta.bus.title;
   document.getElementById('busBadge').textContent = meta.bus.route;
   if (meta.bus.color) document.documentElement.style.setProperty('--bus', brighten(`#${meta.bus.color}`));
   canvas.width = MAP_W;
   canvas.height = H;
-  lines = buildLines();
-  drawStatic();
+  renderPills();
+  const map = document.getElementById('map');
+  map.addEventListener('pointerdown', onPointerDown);
+  map.addEventListener('pointermove', onPointerMove);
+  map.addEventListener('pointerup', onPointerUp);
+  map.addEventListener('pointercancel', onPointerUp);
   await pollState();
   setInterval(pollState, 5000);
   setInterval(renderStatus, 1000);

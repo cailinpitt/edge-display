@@ -42,16 +42,18 @@ function buildRailMeta(lines) {
 }
 
 const round5 = (v) => Math.round(v * 1e5) / 1e5;
-const railMeta = buildRailMeta(boot.rail.lines);
+// Lines are fixed at boot (their geometry is precomputed); a view change in config.json needs a restart.
+const LINES = [...new Set(boot.views.flatMap((v) => v.lines))];
+const railMeta = buildRailMeta(LINES);
 
-function railTrains(cfg, sinceMs) {
-  const placeholders = cfg.rail.lines.map(() => '?').join(',');
+function railTrains(sinceMs) {
+  const placeholders = LINES.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT ts, train_id, line, direction, destination, lat, lon, delay_sec
          FROM rail_observations WHERE ts > ? AND line IN (${placeholders}) ORDER BY ts`,
     )
-    .all(sinceMs, ...cfg.rail.lines);
+    .all(sinceMs, ...LINES);
   const trains = [];
   for (const r of rows) {
     const p = projectTrain(lineGeom, r);
@@ -71,19 +73,19 @@ function railTrains(cfg, sinceMs) {
 
 function railSnapshot(cfg) {
   const now = Date.now();
-  return { now, trains: railTrains(cfg, now - RAIL_WINDOW_MS), home: homeArrivals(cfg, now) };
+  const { ts } = db.prepare('SELECT MAX(ts) AS ts FROM rail_arrivals WHERE ts > ?').get(now - 5 * 60 * 1000);
+  const home = Object.fromEntries(cfg.views.map((v) => [v.id, ts ? homeArrivals(v, ts, now) : []]));
+  return { now, trains: railTrains(now - RAIL_WINDOW_MS), home };
 }
 
-function homeArrivals(cfg, now) {
-  const { ts } = db.prepare('SELECT MAX(ts) AS ts FROM rail_arrivals WHERE ts > ?').get(now - 5 * 60 * 1000);
-  if (!ts) return [];
-  const placeholders = cfg.rail.lines.map(() => '?').join(',');
+function homeArrivals(view, ts, now) {
+  const placeholders = view.lines.map(() => '?').join(',');
   const rows = db
     .prepare(
       `SELECT is_realtime, train_id, line, direction, destination, waiting_seconds
          FROM rail_arrivals WHERE ts = ? AND station = ? AND line IN (${placeholders})`,
     )
-    .all(ts, cfg.rail.home.feedName, ...cfg.rail.lines);
+    .all(ts, view.home.feedName, ...view.lines);
   return rows
     .map((r) => ({
       line: r.line,
@@ -194,7 +196,7 @@ const server = Http.createServer((req, res) => {
   try {
     const cfg = readConfig();
     if (req.url === '/api/meta') {
-      return sendJson(res, { timezone: cfg.timezone, rail: railMeta, home: cfg.rail.home, bus: { route: cfg.bus.route, title: cfg.bus.title, color: busRoute?.route_color } });
+      return sendJson(res, { timezone: cfg.timezone, views: cfg.views, rail: railMeta, bus: { route: cfg.bus.route, title: cfg.bus.title, color: busRoute?.route_color } });
     }
     if (req.url === '/api/state') {
       return sendJson(res, {

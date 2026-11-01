@@ -38,18 +38,32 @@ html, body {
 }
 
 #map {
+  touch-action: none;
   position: relative;
   width: 1840px;
   height: 720px;
   overflow: hidden;
 }
 
-#basemap, #canvas {
+.basemap, #canvas {
   position: absolute;
   inset: 0;
   width: 1840px;
   height: 720px;
 }
+.basemap { opacity: 0; }
+
+.map-head, #homeBlock { transition: opacity 0.4s ease; }
+.swapping { opacity: 0; }
+
+.dots { display: inline-flex; gap: 10px; margin-left: 10px; align-items: center; }
+.dots i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2a3542;
+}
+.dots i.on { background: var(--text); box-shadow: 0 0 10px rgba(255,255,255,0.6); }
 
 #map::after {
   content: '';

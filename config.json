@@ -7,14 +7,28 @@
     "start": "22:00",
     "end": "07:00"
   },
-  "rail": {
-    "lines": ["BLUE", "GREEN"],
-    "home": {
-      "label": "Inman Park",
-      "mapName": "INMAN PARK-REYNOLDSTOWN Station",
-      "feedName": "INMAN PARK STATION"
+  "views": [
+    {
+      "id": "eastwest",
+      "lines": ["BLUE", "GREEN"],
+      "seconds": 90,
+      "home": {
+        "label": "Inman Park",
+        "mapName": "INMAN PARK-REYNOLDSTOWN Station",
+        "feedName": "INMAN PARK STATION"
+      }
+    },
+    {
+      "id": "northsouth",
+      "lines": ["RED", "GOLD"],
+      "seconds": 30,
+      "home": {
+        "label": "Five Points",
+        "mapName": "FIVE POINTS Station",
+        "feedName": "FIVE POINTS STATION"
+      }
     }
-  },
+  ],
   "bus": {
     "route": "2",
     "title": "Moreland @ Euclid",

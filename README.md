@@ -2,8 +2,8 @@
 
 A glanceable MARTA dashboard for a Corsair Xeneon Edge (2560×720) plugged into `cailin-server`.
 
-- **Left:** live Blue/Green trains gliding over a 2.5D map of Atlanta.
-- **Right:** next trains at the home station and route 2 bus arrivals.
+- **Left:** live trains gliding over a 2.5D map of Atlanta. It rotates between an east–west view (Blue/Green) and a north–south view (Red/Gold, map turned so the lines run across the strip). Tap to switch early.
+- **Right:** next trains at the current view's home station, plus route 2 bus arrivals.
 
 Rail data comes from the [atlanta-transit-insights](https://github.com/cailinpitt/atlanta-transit-insights) SQLite DB (read-only). Bus predictions come from MARTA's GTFS-rt TripUpdates feed through that repo's adapter, polled every 30s.
 
@@ -12,7 +12,7 @@ Rail data comes from the [atlanta-transit-insights](https://github.com/cailinpit
 Edit `config.json` on the server. It's re-read on change, so no restart is needed.
 
 - `sleep`: hours the monitor is off (`wlopm`). The page also goes black as a fallback.
-- `rail.home`: station to highlight. `mapName` matches `rail-stations.json`; `feedName` matches the arrivals feed.
+- `views`: each has `lines`, how many `seconds` it stays up, and a `home` station (`mapName` matches `rail-stations.json`, `feedName` matches the arrivals feed). Changing a view's lines needs a restart.
 - `bus.stops`: GTFS stop IDs to show arrivals for.
 
 ## Develop
@@ -24,10 +24,18 @@ npm run deploy   # push, git pull on the server, restart the services
 
 ## Basemap
 
-`public/basemap.png` (OSM buildings + roads, © OpenStreetMap contributors) and its projection `public/basemap.json` are committed. To rebuild, download two Overpass JSON files into a folder and run `node scripts/build-basemap.js <folder>` (needs Brave or `BROWSER=<chromium>`):
+Each view has a committed `public/basemap-<view>.png` (OSM buildings + roads, © OpenStreetMap contributors) and `basemap-<view>.json` (its projection). Framing lives in `scripts/views.js`. To rebuild one (needs the insights repo checked out next to `atlanta/`, or `INSIGHTS_DIR`, and Brave or `BROWSER=<chromium>`):
 
-- `buildings.json`: `way["building"](33.733,-84.482,33.823,-84.214); out tags geom qt;`
-- `roads.json`: `way["highway"~"^(motorway|trunk|primary|secondary|tertiary)$"](same bbox); out geom qt;`
+```
+node scripts/fetch-osm.js northsouth /tmp/osm-ns        # Overpass, tiled, resumable
+node scripts/build-basemap.js northsouth /tmp/osm-ns
+```
+
+When Overpass is overloaded, cut the same files out of a [Geofabrik](https://download.geofabrik.de/north-america/us/georgia.html) extract instead (needs `brew install osmium-tool`):
+
+```
+node scripts/osm-from-pbf.js northsouth georgia-latest.osm.pbf /tmp/osm-ns
+```
 
 ## Install (once, on the server)
 
