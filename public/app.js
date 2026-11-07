@@ -451,6 +451,8 @@ function drawView(view, T, wall, alpha, offsetX = 0) {
 }
 
 function frame(wall) {
+  // Scheduled first so a throw in one frame can't stop the loop for good.
+  requestAnimationFrame(frame);
   if (!document.body.classList.contains('asleep')) {
     const now = Date.now();
     const view = views[viewIdx];
@@ -469,8 +471,9 @@ function frame(wall) {
     }
     if (fadeFrom) drawView(fadeFrom, T, wall, 1 - f);
     if (neighbor) drawView(neighbor, T, wall, 1, offset + (offset < 0 ? MAP_W : -MAP_W));
+    // null on the frame a rotation starts, when the incoming view's fade is 0.
     const counts = drawView(views[viewIdx], T, wall, f, offset);
-    if (wall - lastCountsAt > 1000) {
+    if (counts && wall - lastCountsAt > 1000) {
       lastCountsAt = wall;
       for (const line of Object.keys(views[viewIdx].lines)) {
         const el = document.getElementById(`count${line}`);
@@ -478,7 +481,6 @@ function frame(wall) {
       }
     }
   }
-  requestAnimationFrame(frame);
 }
 
 // Current horizontal offset of the map while dragging or springing to rest.
