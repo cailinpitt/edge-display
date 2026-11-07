@@ -11,7 +11,7 @@ Rail data comes from the [atlanta-transit-insights](https://github.com/cailinpit
 
 Edit `config.json` on the server. It's re-read on change, so no restart is needed.
 
-- `sleep`: overnight hours. `mode` is `dim` (dashboard keeps running at `dimBrightness`, 0–1) or `black`. Both are in software: cage can't power the monitor off, so the backlight stays on.
+- `sleep`: overnight hours. `mode` is `dim` (dashboard keeps running) or `black`. The monitor's backlight is set over DDC/CI (`ddcutil`, I2C bus `ddcBus`) to `monitorBrightness.night` (0 for `black`) and back to `.day` at wake; it's only touched at those switches, so manual daytime changes stick. If DDC fails, the page dims itself to `dimBrightness` (0–1) instead.
 - `views`: each has `lines`, how many `seconds` it stays up, and a `home` station (`mapName` matches `rail-stations.json`, `feedName` matches the arrivals feed). Changing a view's lines needs a restart.
 - `bus.stops`: GTFS stop IDs to show arrivals for.
 

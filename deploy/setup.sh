@@ -7,9 +7,9 @@ APP_DIR=$(cd "$(dirname "$0")/.." && pwd)
 NODE_BIN=$(sudo -u "$USER_NAME" bash -lc 'command -v node')
 
 apt-get update
-apt-get install -y cage wlr-randr
+apt-get install -y cage wlr-randr ddcutil
 snap list chromium >/dev/null 2>&1 || snap install chromium
-usermod -aG video,render,input "$USER_NAME"
+usermod -aG video,render,input,i2c "$USER_NAME"
 
 for unit in edge-display edge-kiosk; do
   sed -e "s|__USER__|$USER_NAME|g" \

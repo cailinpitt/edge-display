@@ -3,6 +3,7 @@ const Http = require('node:http');
 const Path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { readConfig, isAsleep } = require('./lib/config');
+const brightness = require('./lib/brightness');
 
 const PUBLIC_DIR = Path.join(__dirname, 'public');
 const RAIL_WINDOW_MS = 4 * 60 * 1000;
@@ -201,7 +202,11 @@ const server = Http.createServer((req, res) => {
     if (req.url === '/api/state') {
       return sendJson(res, {
         asleep: isAsleep(cfg),
-        sleep: { mode: cfg.sleep?.mode || 'black', dimBrightness: cfg.sleep?.dimBrightness ?? 0.2 },
+        sleep: {
+          mode: cfg.sleep?.mode || 'black',
+          dimBrightness: cfg.sleep?.dimBrightness ?? 0.2,
+          hardware: brightness.hardwareOk(),
+        },
         rail: railSnapshot(cfg),
         bus: busState,
       });
@@ -215,4 +220,5 @@ const server = Http.createServer((req, res) => {
 
 pollBuses();
 setInterval(pollBuses, BUS_POLL_MS);
+brightness.start();
 server.listen(boot.port, '127.0.0.1', () => console.log(`edge-display on http://127.0.0.1:${boot.port}`));

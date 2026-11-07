@@ -662,7 +662,8 @@ async function pollState() {
     const s = await getJson('/api/state');
     const dim = s.asleep && s.sleep.mode === 'dim';
     document.body.classList.toggle('blackout', s.asleep && !dim);
-    document.body.classList.toggle('dimmed', dim);
+    // The monitor's own backlight is lowered over DDC when that works; otherwise dim the page.
+    document.body.classList.toggle('dimmed', dim && !s.sleep.hardware);
     document.documentElement.style.setProperty('--dim-brightness', s.sleep.dimBrightness);
     ingest(s.rail.trains);
     homeArrivals = s.rail.home;
