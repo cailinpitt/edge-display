@@ -11,7 +11,7 @@ Rail data comes from the [atlanta-transit-insights](https://github.com/cailinpit
 
 Edit `config.json` on the server. It's re-read on change, so no restart is needed.
 
-- `sleep`: hours the monitor is off (`wlopm`). The page also goes black as a fallback.
+- `sleep`: overnight hours. `mode` is `dim` (dashboard keeps running at `dimBrightness`, 0–1) or `black`. Both are in software: cage can't power the monitor off, so the backlight stays on.
 - `views`: each has `lines`, how many `seconds` it stays up, and a `home` station (`mapName` matches `rail-stations.json`, `feedName` matches the arrivals feed). Changing a view's lines needs a restart.
 - `bus.stops`: GTFS stop IDs to show arrivals for.
 
@@ -43,4 +43,4 @@ node scripts/osm-from-pbf.js northsouth georgia-latest.osm.pbf /tmp/osm-ns
 sudo bash deploy/setup.sh
 ```
 
-This installs `cage`, `wlopm` and Chromium, and adds two services: `edge-display` (the data server on `127.0.0.1:8787`) and `edge-kiosk` (fullscreen Chromium on tty1). Logs: `journalctl -u edge-kiosk -u edge-display -f`. `/hello.html` is a plain test page.
+This installs `cage` and Chromium, and adds two services: `edge-display` (the data server on `127.0.0.1:8787`) and `edge-kiosk` (fullscreen Chromium on tty1). Logs: `journalctl -u edge-kiosk -u edge-display -f`. `/hello.html` is a plain test page.

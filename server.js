@@ -201,6 +201,7 @@ const server = Http.createServer((req, res) => {
     if (req.url === '/api/state') {
       return sendJson(res, {
         asleep: isAsleep(cfg),
+        sleep: { mode: cfg.sleep?.mode || 'black', dimBrightness: cfg.sleep?.dimBrightness ?? 0.2 },
         rail: railSnapshot(cfg),
         bus: busState,
       });

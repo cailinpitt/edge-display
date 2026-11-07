@@ -453,7 +453,7 @@ function drawView(view, T, wall, alpha, offsetX = 0) {
 function frame(wall) {
   // Scheduled first so a throw in one frame can't stop the loop for good.
   requestAnimationFrame(frame);
-  if (!document.body.classList.contains('asleep')) {
+  if (!document.body.classList.contains('blackout')) {
     const now = Date.now();
     const view = views[viewIdx];
     const idle = !drag && !settle;
@@ -660,7 +660,10 @@ async function getJson(url) {
 async function pollState() {
   try {
     const s = await getJson('/api/state');
-    document.body.classList.toggle('asleep', s.asleep);
+    const dim = s.asleep && s.sleep.mode === 'dim';
+    document.body.classList.toggle('blackout', s.asleep && !dim);
+    document.body.classList.toggle('dimmed', dim);
+    document.documentElement.style.setProperty('--dim-brightness', s.sleep.dimBrightness);
     ingest(s.rail.trains);
     homeArrivals = s.rail.home;
     busState = s.bus;

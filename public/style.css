@@ -301,4 +301,7 @@ html, body {
   display: none;
   z-index: 10;
 }
-body.asleep #sleep { display: block; }
+body.blackout #sleep { display: block; }
+
+#stage { transition: filter 3s ease; }
+body.dimmed #stage { filter: brightness(var(--dim-brightness, 0.2)); }
