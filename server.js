@@ -4,6 +4,7 @@ const Path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { readConfig, isAsleep } = require('./lib/config');
 const brightness = require('./lib/brightness');
+const watchdog = require('./lib/watchdog');
 
 const PUBLIC_DIR = Path.join(__dirname, 'public');
 const RAIL_WINDOW_MS = 4 * 60 * 1000;
@@ -196,10 +197,14 @@ function serveStatic(req, res) {
 const server = Http.createServer((req, res) => {
   try {
     const cfg = readConfig();
-    if (req.url === '/api/meta') {
+    const url = new URL(req.url, 'http://x');
+    if (url.pathname === '/api/meta') {
       return sendJson(res, { timezone: cfg.timezone, views: cfg.views, rail: railMeta, bus: { route: cfg.bus.route, title: cfg.bus.title, color: busRoute?.route_color } });
     }
-    if (req.url === '/api/state') {
+    if (url.pathname === '/api/state') {
+      if (url.searchParams.has('frames')) {
+        watchdog.report(Number(url.searchParams.get('frames')), url.searchParams.get('drawing') === '1');
+      }
       return sendJson(res, {
         asleep: isAsleep(cfg),
         sleep: {

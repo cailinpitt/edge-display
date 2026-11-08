@@ -436,6 +436,8 @@ function drawTrains(view, T, wall) {
 }
 
 let lastCountsAt = -Infinity;
+// Reported to the server, which restarts the kiosk if this stops climbing.
+let framesDrawn = 0;
 
 function drawView(view, T, wall, alpha, offsetX = 0) {
   view.img.style.opacity = alpha;
@@ -454,6 +456,7 @@ function frame(wall) {
   // Scheduled first so a throw in one frame can't stop the loop for good.
   requestAnimationFrame(frame);
   if (!document.body.classList.contains('blackout')) {
+    framesDrawn++;
     const now = Date.now();
     const view = views[viewIdx];
     const idle = !drag && !settle;
@@ -659,7 +662,8 @@ async function getJson(url) {
 
 async function pollState() {
   try {
-    const s = await getJson('/api/state');
+    const drawing = document.body.classList.contains('blackout') ? 0 : 1;
+    const s = await getJson(`/api/state?frames=${framesDrawn}&drawing=${drawing}`);
     const dim = s.asleep && s.sleep.mode === 'dim';
     document.body.classList.toggle('blackout', s.asleep && !dim);
     // The monitor's own backlight is lowered over DDC when that works; otherwise dim the page.
