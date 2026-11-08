@@ -210,7 +210,6 @@ const server = Http.createServer((req, res) => {
         sleep: {
           mode: cfg.sleep?.mode || 'black',
           dimBrightness: cfg.sleep?.dimBrightness ?? 0.2,
-          hardware: brightness.hardwareOk(),
         },
         rail: railSnapshot(cfg),
         bus: busState,

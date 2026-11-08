@@ -7,9 +7,9 @@
     "start": "22:00",
     "end": "07:00",
     "mode": "dim",
-    "monitorBrightness": { "day": 95, "night": 10 },
+    "monitorBrightness": { "day": 95, "night": 0 },
     "ddcBus": 2,
-    "dimBrightness": 0.2
+    "dimBrightness": 0.4
   },
   "views": [
     {
